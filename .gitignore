@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+data/
+config/*.local.json
+config/bot-token.txt
+.env
+*.log
+.DS_Store
