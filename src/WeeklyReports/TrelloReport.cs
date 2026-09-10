@@ -9,7 +9,7 @@ public record ReportList(string Id, string Name, string Category);
 public sealed class ReportSettings
 {
     public string BoardId { get; set; } = "";
-    public string DutyLabel { get; set; } = "值班";
+    public string DutyLabel { get; set; } = "Worktrack";
     public List<ReportPerson> Members { get; set; } = [];
     public List<ReportList> Lists { get; set; } = [];
     public void Validate()

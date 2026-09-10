@@ -12,7 +12,7 @@ public static class ReportTests
         BoardCard Card(string id,string list,string[]? people=null,CardLabel[]? labels=null)=>new(id,"board",list,id,"https://trello.com/c/test",people??["a"],labels??[],false,start.AddDays(1),null);
         JsonElement Move(string id,string card,DateTimeOffset time)=>J(new { id,type="updateCard",date=time,data=new { card=new {id=card},listBefore=new {id="wip"},listAfter=new {id="done"} } });
         var source=new ReportSource(end.AddSeconds(1),end.AddSeconds(2),J(new{id="board"}),J(map.Lists.Select(l=>new{id=l.Id,name=l.Name,closed=false})),J(map.Members.Select(m=>new{id=m.Id})),
-            [Card("old","done"),Card("new","done"),Card("boundary","done"),Card("end","done"),Card("reopened","qa"),Card("backlog","todo"),Card("plan","plan"),Card("outsider","wip",["z"]),Card("shared","release",["a","b"]),Card("duty","wip",labels:[new("x","值班"),new("y","REPP")])],
+            [Card("old","done"),Card("new","done"),Card("boundary","done"),Card("end","done"),Card("reopened","qa"),Card("backlog","todo"),Card("plan","plan"),Card("outsider","wip",["z"]),Card("shared","release",["a","b"]),Card("duty","wip",labels:[new("x","Worktrack"),new("y","REPP")])],
             [Move("1","old",start.AddSeconds(-1)),Move("2","new",start.AddDays(1)),Move("3","boundary",start),Move("4","end",end),Move("5","reopened",start.AddDays(1))]);
         var archivedSource=source with {Cards=source.Cards.Select(c=>c with {Closed=true}).ToList()};
         check(TrelloReport.Classify(archivedSource,map,friday,false).Rows.Count==0,"已封存卡片排除所有分類，含完成與值班");
@@ -24,8 +24,10 @@ public static class ReportTests
         check(report.Rows.Single(r=>r.CardId=="reopened").Category=="testing","完成後退回測試不列已完成");
         check(report.Rows.Any(r=>r.CardId=="backlog")&&!report.Rows.Any(r=>r.CardId is "plan" or "outsider"),"To Do 全列、Plan 與未指派人員排除");
         check(report.Rows.Count(r=>r.CardId=="shared")==1 && report.Rows.Single(r=>r.CardId=="shared").People.Length==2,"多人卡片合併並列姓名");
+        var renamed = TrelloReport.Classify(source with { Cards=[Card("oldLabel","wip",labels:[new("old","值班")])],Actions=[] },map,friday,false);
+        check(!renamed.Rows.Single().Duty,"舊值班標籤不再作線上問題判定");
         var duty=report.Rows.Single(r=>r.CardId=="duty");
-        check(duty.Duty && duty.Systems.SequenceEqual(new[]{"REPP"}),"值班標籤不當系統名稱");
+        check(duty.Duty && duty.Systems.SequenceEqual(new[]{"REPP"}),"Worktrack 歸線上問題且不當系統名稱");
         var dup = TrelloReport.Deduplicate([report.Rows.First() with { CardId="copy1",Title="BUG #33032 工作",Category="releasing",SourceCardIds=[] }, report.Rows.First() with {CardId="copy2",Title="NPP 33032 工作",Category="todo",SourceCardIds=[]}]);
         check(dup.Count==1 && dup[0].Category=="releasing" && dup[0].SourceCardIds.Length==2,"同工單跨卡片去重，保留發布階段與來源證據");
         check(TrelloReport.Deduplicate([dup[0],dup[0] with {CardId="other",Title="BUG #330320 其他"}]).Count==2,"不同工單號不誤合併");
