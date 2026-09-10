@@ -65,6 +65,7 @@ public static class TrelloReport
             var list = config.Lists.SingleOrDefault(l => l.Id == card.IdList);
             if (list is null) continue;
             var people = config.Members.Where(m => card.IdMembers.Contains(m.Id)).Select(m => m.Name).ToArray();
+            if (people.Length == 0 && list.Category == "todo" && card.IdMembers.Length == 0) people = ["尚未安排"];
             if (people.Length == 0) continue;
             JsonElement? completion = null;
             if (list.Category == "completed")
@@ -76,7 +77,7 @@ public static class TrelloReport
             }
             var labels = card.Labels.Select(l => l.Name.Trim()).Where(n => n.Length > 0).Distinct().ToArray();
             var systems = labels.Where(n => n != config.DutyLabel).ToArray();
-            var stage = list.Category switch { "todo" => "待處理／未完成", "testing" => "QA 測試中", "releasing" => "待發布／發布中", "completed" => "已發布生產／問題已解決", _ => "處理中" };
+            var stage = list.Category switch { "todo" => "未完成", "testing" => "QA 測試中", "releasing" => "待發布／發布中", "completed" => "已發布生產／問題已解決", _ => "處理中" };
             rows.Add(new(card.Id, card.Name, card.ShortUrl, people, systems.Length == 0 ? ["未標示系統"] : systems,
                 list.Category, stage, list.Id, labels.Contains(config.DutyLabel), card.Closed, card.Due,
                 completion?.GetProperty("date").GetDateTimeOffset(), completion?.GetProperty("id").GetString()));
@@ -100,7 +101,6 @@ public static class TrelloReport
         b.AppendLine($"【C# 組員週報｜{report.Friday}】");
         b.AppendLine($"期間：{report.PeriodStartExclusive:MM/dd HH:mm} 之後～{report.AsOf.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}（台北時間）");
         if (report.Preview) b.AppendLine("提前試跑，非正式截止報告");
-        b.AppendLine($"\n一、本週重點\n• 本期完成 {rows.Count(r=>r.Category=="completed")} 件；進行中 {rows.Count(r=>r.Category is "inProgress" or "testing" or "releasing")} 件；待處理／未完成 {rows.Count(r=>r.Category=="todo")} 件。（含值班事項，各卡片計一次）");
         void Section(string title, IEnumerable<ReportRow> selected, bool omitEmpty = false)
         {
             var items = selected.ToList();
@@ -110,15 +110,16 @@ public static class TrelloReport
             var index = 0;
             foreach(var row in items)
             {
-                b.AppendLine($"{++index}. {string.Join("、",row.People)}｜{row.Stage}｜{string.Join("／",row.Systems)}｜{row.Title.Replace('\r',' ').Replace('\n',' ')}");
+                var status = row.Category == "todo" && !row.Duty ? "" : row.Stage + "｜";
+                b.AppendLine($"{++index}. {string.Join("、",row.People)}｜{status}{string.Join("／",row.Systems)}｜{row.Title.Replace('\r',' ').Replace('\n',' ')}");
                 if(row.CompletedAt is {} at) b.AppendLine($"  完成移入時間：{at.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}");
                 if(row.Due is {} due) b.AppendLine($"  Trello 到期日：{due.ToOffset(TimeSpan.FromHours(8)):yyyy/MM/dd HH:mm}");
             }
         }
-        Section("二、進行中", rows.Where(r=>!r.Duty && r.Category is "inProgress" or "testing" or "releasing"));
-        Section("三、已完成",rows.Where(r=>!r.Duty && r.Category=="completed"));
-        Section("四、待處理／未完成",rows.Where(r=>!r.Duty && r.Category=="todo"));
-        Section("五、值班處理線上問題",rows.Where(r=>r.Duty),true);
+        Section("一、進行中", rows.Where(r=>!r.Duty && r.Category is "inProgress" or "testing" or "releasing"));
+        Section("二、已完成",rows.Where(r=>!r.Duty && r.Category=="completed"));
+        Section("三、未完成",rows.Where(r=>!r.Duty && r.Category=="todo"));
+        Section("四、值班處理線上問題",rows.Where(r=>r.Duty));
         return b.ToString();
     }
     public static List<string> Split(string text, int maxLength = 3500)
