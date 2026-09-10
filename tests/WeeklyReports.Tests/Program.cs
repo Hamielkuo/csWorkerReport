@@ -48,4 +48,5 @@ try
     }
 }
 finally { Directory.Delete(root,true); }
+await TrelloTests.Run(Check);
 Console.WriteLine($"{passed} checks passed.");

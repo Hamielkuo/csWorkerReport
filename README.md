@@ -96,3 +96,18 @@ dotnet run --project tests/WeeklyReports.Tests
 Git 排除 Token、組員資料、data/ 與執行日誌。備份時先停止收件服務，再備份整個 data/ 與 members.local.json；不要只複製正在寫入的 .db 而漏掉 WAL。第一版不自動清除資料、不自動備份。
 
 依據：[Telegram Bot API](https://core.telegram.org/bots/api#getupdates)、[Codex 排程文件](https://developers.openai.com/codex/app/automations)。
+
+## Trello 唯讀連線
+
+本機 `config/trello.local.json` 保存 apiKey、token、boardName、boardShortLink、boardId，已排除 Git。新環境可從 `config/trello.example.json` 複製設定。
+
+```sh
+dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-check
+dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-sync
+```
+
+`trello-check` 核對指定看板名稱及網址中的 shortLink，首次成功後保存正式 boardId。`trello-sync` 只讀取該看板的清單及未封存卡片基本資訊，保存至 `data/trello/<boardId>/latest.json` 及歷次 runs；不讀取其他看板，不修改 Trello。
+
+請使用 read scope Token。程式限制不會改變 Token 本身的 Trello 帳號權限。憑證只透過 Authorization Header 傳送，禁止重新導向；錯誤不輸出秘密或伺服器原始回應。名稱／ID／shortLink 不符時停止，改名後須由管理者更新設定。卡片的清單與 dueComplete 不直接代表本週工作已完成。
+
+目前 Trello 同步為手動指令，尚未把 Trello 資料納入週五週報或推定人員、完成日期；需確認看板清單與週報對應規則後再整合。
