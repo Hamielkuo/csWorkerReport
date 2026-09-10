@@ -96,30 +96,46 @@ public static class TrelloReport
     }
     public static string Render(ClassifiedReport report)
     {
-        var rows = report.Rows;
+        var rows = report.Rows.DistinctBy(r => r.CardId).ToList();
+        var active = rows.Where(r => !r.Duty && r.Category is "inProgress" or "testing" or "releasing").ToList();
+        var completed = rows.Where(r => !r.Duty && r.Category == "completed").ToList();
+        var todo = rows.Where(r => !r.Duty && r.Category == "todo").ToList();
+        var duty = rows.Where(r => r.Duty).ToList();
         var b = new StringBuilder();
-        b.AppendLine($"【C# 組員週報｜{report.Friday}】");
-        b.AppendLine($"期間：{report.PeriodStartExclusive:MM/dd HH:mm} 之後～{report.AsOf.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}（台北時間）");
-        if (report.Preview) b.AppendLine("提前試跑，非正式截止報告");
-        void Section(string title, IEnumerable<ReportRow> selected, bool omitEmpty = false)
+        b.AppendLine($"【C# 組員週報｜{report.Friday}】\n");
+        b.AppendLine($"期間：{report.PeriodStartExclusive:MM/dd HH:mm} ～ {report.AsOf.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}（台北時間）");
+        b.AppendLine($"進行中 {active.Count}｜已完成 {completed.Count}｜未完成 {todo.Count}｜值班處理線上問題 {duty.Count}");
+        if (report.Preview) b.AppendLine("\n⚠️ 提前試跑，非正式截止報告");
+        int StageOrder(string category) => category switch { "inProgress" => 0, "testing" => 1, "releasing" => 2, "completed" => 3, _ => 4 };
+        void Section(string title, List<ReportRow> items, bool groupStage = false)
         {
-            var items = selected.ToList();
-            if (omitEmpty && items.Count == 0) return;
-            b.AppendLine($"\n{title}");
-            if(items.Count == 0) b.AppendLine("• 無符合條件的事項。");
-            var index = 0;
-            foreach(var row in items)
+            b.AppendLine($"\n{title}\n");
+            if (items.Count == 0) { b.AppendLine("• 無符合條件的事項。"); return; }
+            foreach (var person in items.GroupBy(r => string.Join("、", r.People)).OrderBy(g => g.Key == "尚未安排" ? 0 : 1).ThenBy(g => g.Key, StringComparer.Ordinal))
             {
-                var status = row.Category == "todo" && !row.Duty ? "" : row.Stage + "｜";
-                b.AppendLine($"{++index}. {string.Join("、",row.People)}｜{status}{string.Join("／",row.Systems)}｜{row.Title.Replace('\r',' ').Replace('\n',' ')}");
-                if(row.CompletedAt is {} at) b.AppendLine($"  完成移入時間：{at.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}");
-                if(row.Due is {} due) b.AppendLine($"  Trello 到期日：{due.ToOffset(TimeSpan.FromHours(8)):yyyy/MM/dd HH:mm}");
+                b.AppendLine($"【{person.Key}】");
+                foreach (var group in person.OrderBy(r => StageOrder(r.Category)).GroupBy(r => groupStage ? r.Stage : ""))
+                {
+                    if (groupStage) b.AppendLine(group.Key);
+                    b.AppendLine();
+                    var index = 0;
+                    foreach (var row in group)
+                    {
+                        var titleText = row.Title.Replace('\r', ' ').Replace('\n', ' ');
+                        var systems = row.Systems.Where(system => !titleText.Contains(system, StringComparison.OrdinalIgnoreCase)).ToArray();
+                        var prefix = systems.Length == 0 ? "" : string.Join("／", systems) + "｜";
+                        b.AppendLine($"{++index}. {prefix}{titleText}");
+                        if (row.CompletedAt is {} at) b.AppendLine($"  完成移入時間：{at.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}");
+                        if (row.Due is {} due) b.AppendLine($"  Trello 到期日：{due.ToOffset(TimeSpan.FromHours(8)):yyyy/MM/dd HH:mm}");
+                    }
+                    b.AppendLine();
+                }
             }
         }
-        Section("一、進行中", rows.Where(r=>!r.Duty && r.Category is "inProgress" or "testing" or "releasing"));
-        Section("二、已完成",rows.Where(r=>!r.Duty && r.Category=="completed"));
-        Section("三、未完成",rows.Where(r=>!r.Duty && r.Category=="todo"));
-        Section("四、值班處理線上問題",rows.Where(r=>r.Duty));
+        Section("一、進行中", active, true);
+        Section("二、已完成", completed);
+        Section("三、未完成", todo);
+        Section("四、值班處理線上問題", duty, true);
         return b.ToString();
     }
     public static List<string> Split(string text, int maxLength = 3500)
