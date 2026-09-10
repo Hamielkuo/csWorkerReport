@@ -22,7 +22,7 @@ public sealed class TrelloSettings
 }
 
 // Only board-scoped GET endpoints are exposed; credentials never appear in URLs or output.
-public sealed class TrelloReader(HttpClient http, TrelloSettings settings)
+public sealed partial class TrelloReader(HttpClient http, TrelloSettings settings)
 {
     private async Task<JsonElement> Get(string suffix, CancellationToken ct)
     {

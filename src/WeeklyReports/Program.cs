@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using WeeklyReports;
 
 var rootIndex = Array.IndexOf(args, "--root");
@@ -7,6 +6,31 @@ var root = Path.GetFullPath(rootIndex >= 0 ? args[rootIndex + 1] : Directory.Get
 var command = args.FirstOrDefault() ?? "run";
 try
 {
+    if (command == "run") throw new ArgumentException("Telegram Bot 收件已停用；週報改用 trello-report。歷史資料仍保留。");
+    if (command == "trello-report")
+    {
+        var dateIndex = Array.IndexOf(args, "--date");
+        var friday = dateIndex >= 0 ? Rules.ParseFriday(args[dateIndex + 1]) : Rules.Friday(DateTimeOffset.UtcNow);
+        var preview = args.Contains("--preview");
+        var mapping = JsonSerializer.Deserialize<ReportSettings>(File.ReadAllText(Path.Combine(root,"config/trello-report.local.json")),Rules.Json)!;
+        mapping.Validate();
+        var reuseIndex = Array.IndexOf(args,"--source");
+        ReportSource source;
+        if(reuseIndex >= 0)
+            source=JsonSerializer.Deserialize<ReportSource>(File.ReadAllText(args[reuseIndex+1]),Rules.Json)!;
+        else
+        {
+            var config=JsonSerializer.Deserialize<TrelloSettings>(File.ReadAllText(Path.Combine(root,"config/trello.local.json")),Rules.Json)!;
+            if(config.BoardId!=mapping.BoardId) throw new ArgumentException("Trello 憑證與週報看板 ID 不一致。");
+            using var handler=new HttpClientHandler { AllowAutoRedirect=false };
+            using var client=new HttpClient(handler) { Timeout=TimeSpan.FromSeconds(60) };
+            source=await new TrelloReader(client,config).ReportSnapshot(friday,CancellationToken.None);
+        }
+        var report=TrelloReport.Classify(source,mapping,friday,preview);
+        var run=TrelloReport.Save(root,source,report);
+        Console.WriteLine(JsonSerializer.Serialize(new { report.Friday,report.Preview,Count=report.Rows.Count,RunDirectory=run,Categories=report.Rows.GroupBy(r=>r.Category).ToDictionary(g=>g.Key,g=>g.Count()),DutyCount=report.Rows.Count(r=>r.Duty)},Rules.Json));
+        return;
+    }
     if (command is "trello-check" or "trello-sync")
     {
         var settingsPath = Path.Combine(root, "config/trello.local.json");
@@ -58,17 +82,7 @@ try
         Console.WriteLine(JsonSerializer.Serialize(store.Snapshot(friday, args.Contains("--include-late"), DateTimeOffset.UtcNow), Rules.Json));
         return;
     }
-    if (command != "run") throw new ArgumentException("可用指令：run、bind、snapshot、trello-check、trello-sync。");
-    var tokenPath = Path.Combine(root, "config/bot-token.txt");
-    var token = (Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN") ?? (File.Exists(tokenPath) ? File.ReadAllText(tokenPath) : "")).Trim();
-    if (!Regex.IsMatch(token, @"^\d+:[A-Za-z0-9_-]+$")) throw new ArgumentException("請將 Bot Token 放在 config/bot-token.txt（單行），或設定 TELEGRAM_BOT_TOKEN。");
-    _ = Rules.Members(root);
-    using var singleton = new FileStream(Path.Combine(root, "data/receiver.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-    using var stop = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
-    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
-    var bot = new TelegramReceiver(http, token, root, store);
-    await bot.Run(stop.Token);
+    throw new ArgumentException("可用指令：trello-report、trello-check、trello-sync；歷史查詢：snapshot、bind。");
 }
 catch (OperationCanceledException) { }
 catch (ArgumentException ex) { Console.Error.WriteLine(ex.Message); Environment.ExitCode = 1; }

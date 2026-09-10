@@ -1,113 +1,74 @@
-# 組員週報收件服務
+# C# 組員週報
 
-.NET 10 本地常駐 Console Worker，Telegram long polling 收件，SQLite 保存版本，JSON 原文依週五日期歸檔。Codex 每週五 16:50 整理並在對話提供 Telegram 文字，由管理者 17:00 人工發送。
+.NET 10 從 Trello TCT-CJ 唯讀取得卡片及移動歷史，固定人員與清單 ID 分類。Codex 每週五 16:50（Asia/Taipei）整理、存檔、在目前對話提供 Telegram 文字，由管理者 17:00 人工傳給主管。
 
-## 首次設定
+Telegram Bot 收件已停用，原有 SQLite 與原文保留，不再納入新週報。`run` 指令已禁止啟動收件。舊操作記錄在 docs/telegram-legacy.md，僅作歷史參考。
 
-1. 將 Telegram Bot Token 貼至 `config/bot-token.txt`，只放 Token 單行、不加引號。此檔案已排除 Git，亦可使用 `TELEGRAM_BOT_TOKEN` 環境變數（優先）。不要在 Codex 對話貼 Token。
-2. 本機 `config/members.local.json` 已依提供名單建立；新環境從 `config/members.example.json` 複製，再填姓名。`key` 是穩定識別碼，開始收件後請勿任意更改。
-3. 建置、啟動：
+## 設定與使用
+
+- `config/trello.local.json`：API Key、唯讀 Token、固定看板 ID／名稱／shortLink。
+- `config/trello-report.local.json`：三位人員 Member ID 與輸出姓名、五個清單 ID／精確名稱／分類，以及值班標籤。
+- 設定範本在 config/*.example.json；本機秘密與人員資料均排除 Git。
 
 ```sh
 dotnet restore src/WeeklyReports
 dotnet build src/WeeklyReports -c Release --no-restore
-./scripts/run.sh
-```
-
-4. 請每位組員私訊 Bot `/start` 或 `/id`，取得自己的數字 ID。管理者核對本人後執行（將範例 ID 換成實際 ID）：
-
-```sh
-dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll bind member-1 123456789
-```
-
-三位組員對應 key 請見本機 members.local.json。綁定立即生效；未綁定者只能取得指引，不能提交。組員名稱不作為身份驗證依據。
-
-## 組員操作
-
-- `/template`：取得四區塊格式。標題獨立一行、每區必填；無事項填「無」。
-- 直接貼完整週報：儲存並回覆收件確認。
-- 重新提交完整週報或編輯原訊息：保留版本，取提交時間最新的版本。
-- `/status`：查看當週最新收件與是否晚交。
-- 第一版僅接收私訊文字，不解析圖片、附件或群組訊息。Telegram 訊息刪除不會刪除已存週報。
-
-```text
-1.進行中
-- 項目、進度、預計完成日期
-
-2.已完成
-- 項目與完成結果
-
-3.未完成
-- 原訂本週完成事項、延期原因、需要協助
-
-4.值班處理線上問題
-- 日期、問題、處理結果與後續追蹤
-```
-
-## 週次與截止
-
-Asia/Taipei 週一至週日歸屬該週週五，例：9/7～9/13 → `2026-09-11`。週末新提交仍為當週補交；跨週編輯依原訊息週次保存。跨週補前週請編輯前週原訊息。
-提交時間及本地收件時間都必須 <= 週五 16:50:00，才能自動納入例行彙整。離線期間截止後才收到的資料也算晚交，以確保已產生的截止快照可重現。
-
-```sh
+# 正式報告：需已到當週週五 16:50
 ./scripts/snapshot.sh --date 2026-09-11
-# 管理者明確要求重新整理、納入晚交時使用：
-./scripts/snapshot.sh --date 2026-09-11 --include-late
+# 提前試跑，與正式檔案分開保存
+./scripts/snapshot.sh --date 2026-09-11 --preview
+# 原始唯讀連線驗證
+dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-check
 ```
 
-Snapshot 不使用 AI、不需要 Token、不發送訊息。AI 文字整理由 Codex 排程依 `docs/weekly-summary.md` 執行，無須另設 OpenAI API Key。
+## 固定規則
 
-## 資料
+期間為上週五 16:50 之後～本週五 16:50，完成動作依左開右閉區間選取。
+
+| 清單 | 分類／範圍 |
+|---|---|
+| 處理完畢 | 本期移入且截止時仍在此清單，才算已完成 |
+| 發布 | 全列進行中，標示待發布／發布中 |
+| 測試 | 全列進行中，標示 QA 測試中 |
+| Work in process | 全列進行中，標示處理中 |
+| To Do | 全列待處理／未完成，不推測延期 |
+| 其他（含 Plan） | 排除 |
+
+同一卡片多位指定人員並列一次，未指派指定三人者排除。以卡片 ID 去重，不合併同單號的不同卡片。非「值班」標籤均為系統名稱；「值班」卡片只列第五節，保留狀態；無值班事項則省略整節。已封存卡片（closed=true）一律排除，包含已完成與值班事項；來源快照仍可保留封存資料供截止檢查，但不得納入週報。
+
+## 來源與輸出
+
+卡片與動作採 ID cursor 分頁（每頁 1000），取得指定看板全量資料再套用人員、清單範圍。只呼叫該看板 GET API；憑證放 Authorization Header，禁止 redirect。
 
 ```text
-data/
-  weekly-reports.db                       # SQLite 正式來源（WAL）
-  reports/2026-09-11/
-    members/member-1/123456.json           # 每個 Telegram update 一版，含原文和時間
-    summary/
-      report.md
-      telegram.txt
-      runs/20260911-165001/                # 每次整理及來源快照
+data/reports/YYYY-MM-DD/summary/
+  report.md / telegram.txt                  # 正式稿
+  latest-run.txt                            # 正式來源目錄
+  preview-report.md / preview-telegram.txt   # 提前試跑稿
+  preview-latest-run.txt
+  runs/<時間>-trello/
+    source.json                             # 來源、動作與擷取時間
+    classified.json                         # 分類與完成移入證據
+    report.md / telegram.txt
+    telegram-01.txt ...                      # 每則 <= 3500 UTF-16 code units
 ```
 
-SQLite 先成功寫入，再匯出原文，最後推進 Telegram offset。重送依 update ID 去重；若匯出中斷，下次重試／snapshot 可重建檔案。回覆確認可能因網路重試重複，但不會新增重複資料。`receiver.lock` 防止同專案重複收件。
+程式提供可直接使用的基礎稿；Codex 依 docs/weekly-summary.md 整理重點並保留基礎稿及全部卡片，無須 OpenAI API Key。正式與試跑各自保存，歷史版本不覆蓋。沒有符合卡片時仍產出零事項報告，不再列「未交名單」。
 
-## 常駐與通知
+## 截止準確性與運作條件
 
-目前先提供前景啟動腳本，Token 填妥後即可啟動。關閉終端會停止服務；持續運作可用 macOS LaunchAgent，範本在 `docs/local.weeklyreports.plist`，安裝方式見下方。啟動 Bot 前請確保未被其他程式使用；已設定 webhook 時服務會停止，避免改動其他用途。
+Trello REST 不提供完整歷史快照（例如標籤變更不一定能從動作清單還原）。若全看板任何卡片最後活動／本期動作晚於截止時間，程式保守拒絕產生正式稿，包括範圍外卡片更新。試跑則以擷取開始為界。失敗不覆蓋既有成功結果，也不會改用目前資料宣稱為截止版本。
+
+因此請讓 Mac 開機、連網、Codex App 運作並準時執行，且擷取時避免修改看板。任意日期的歷史補跑若缺少當時快照可能被拒絕；若已保存當期 source.json，可使用 `trello-report --date YYYY-MM-DD --source /absolute/path/source.json` 重現分類（來源需符合正式截止檢查）。REST 多次請求不是原子快照，無法保證任意時刻完整還原。
+
+## 驗證與備份
 
 ```sh
-mkdir -p "$HOME/Library/LaunchAgents" data/logs
-cp docs/local.weeklyreports.plist "$HOME/Library/LaunchAgents/local.weeklyreports.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.weeklyreports.plist"
-# 停止並移除載入：
-launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.weeklyreports.plist"
+dotnet run --project tests/WeeklyReports.Tests --no-restore
 ```
 
-LaunchAgent 登入後啟動，不會喚醒睡眠中的電腦。Mac 必須開機且連網；Codex 排程需要 App 運行，桌面推播亦取決於系統通知設定。Telegram 未收取更新最多保留 24 小時，長時間離線可能漏件：要求組員以 Bot 成功回覆為收件依據。
+測試包括週界、完成退回、多人去重、範圍排除、值班、分頁、錯誤保護與輸出。備份 data/ 和本機設定需另外處理，Git 不包含它們。舊 Telegram SQLite 仍保留但不再寫入。
 
-## 測試與備份
+依據：[Trello API](https://developer.atlassian.com/cloud/trello/guides/rest-api/nested-resources/)、[Codex 排程](https://developers.openai.com/codex/app/automations)。
 
-```sh
-dotnet run --project tests/WeeklyReports.Tests
-```
-
-測試使用暫存目錄與合成資料，不傳 Telegram。真實收件需要 Token 和組員 ID 完成後再驗證。
-Git 排除 Token、組員資料、data/ 與執行日誌。備份時先停止收件服務，再備份整個 data/ 與 members.local.json；不要只複製正在寫入的 .db 而漏掉 WAL。第一版不自動清除資料、不自動備份。
-
-依據：[Telegram Bot API](https://core.telegram.org/bots/api#getupdates)、[Codex 排程文件](https://developers.openai.com/codex/app/automations)。
-
-## Trello 唯讀連線
-
-本機 `config/trello.local.json` 保存 apiKey、token、boardName、boardShortLink、boardId，已排除 Git。新環境可從 `config/trello.example.json` 複製設定。
-
-```sh
-dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-check
-dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-sync
-```
-
-`trello-check` 核對指定看板名稱及網址中的 shortLink，首次成功後保存正式 boardId。`trello-sync` 只讀取該看板的清單及未封存卡片基本資訊，保存至 `data/trello/<boardId>/latest.json` 及歷次 runs；不讀取其他看板，不修改 Trello。
-
-請使用 read scope Token。程式限制不會改變 Token 本身的 Trello 帳號權限。憑證只透過 Authorization Header 傳送，禁止重新導向；錯誤不輸出秘密或伺服器原始回應。名稱／ID／shortLink 不符時停止，改名後須由管理者更新設定。卡片的清單與 dueComplete 不直接代表本週工作已完成。
-
-目前 Trello 同步為手動指令，尚未把 Trello 資料納入週五週報或推定人員、完成日期；需確認看板清單與週報對應規則後再整合。
+對外格式使用「C# 組員週報」，不顯示來源列或 Trello 連結；事項依「1. 姓名｜狀態｜系統｜事項」同一行呈現。來源與分類 JSON 仍保留卡片連結供追溯。

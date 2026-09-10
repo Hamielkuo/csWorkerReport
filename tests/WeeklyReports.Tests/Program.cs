@@ -49,4 +49,6 @@ try
 }
 finally { Directory.Delete(root,true); }
 await TrelloTests.Run(Check);
+ReportTests.Run(Check);
+await PaginationTests.Run(Check);
 Console.WriteLine($"{passed} checks passed.");
