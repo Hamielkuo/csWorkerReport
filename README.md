@@ -7,7 +7,7 @@ Telegram Bot 收件已停用，原有 SQLite 與原文保留，不再納入新�
 ## 設定與使用
 
 - `config/trello.local.json`：API Key、唯讀 Token、固定看板 ID／名稱／shortLink。
-- `config/trello-report.local.json`：三位人員 Member ID 與輸出姓名、五個清單 ID／精確名稱／分類，以及Worktrack 標籤。
+- `config/trello-report.local.json`：三位組員（蔡曜輿、張維良、阿汶）的 Member ID 與輸出姓名、五個清單 ID／精確名稱／分類，以及 Worktrack 標籤。
 - `config/notion.local.json`：Notion installation token、API 版本與「週報」data source ID（本機秘密，已排除 Git）。
 - 設定範本在 config/*.example.json；本機秘密與人員資料均排除 Git。
 
@@ -20,6 +20,8 @@ dotnet build src/WeeklyReports -c Release --no-restore
 ./scripts/snapshot.sh --date 2026-09-11 --preview
 # 明確手動提前同步：會建立「提前測試」Notion page，不冒充正式週報
 ./scripts/snapshot.sh --date 2026-09-11 --force-early
+# 截止後人工確認 Trello 狀態，重整同一筆 Notion 週報
+./scripts/snapshot.sh --date 2026-09-11 --refresh
 # Notion 唯讀連線與欄位驗證
 dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll notion-check --root "$PWD"
 # 原始唯讀連線驗證
@@ -39,7 +41,7 @@ dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-check
 | To Do | 全列未完成，不推測延期 |
 | 其他（含 Plan） | 排除 |
 
-同一卡片多位指定人員並列一次，未指派指定三人者排除。以明確工單號去重，無工單號才以卡片 ID 去重。非「Worktrack」標籤均為系統名稱；「Worktrack」卡片只列第四節，保留狀態；無值班事項仍保留第四節並顯示「• 無符合條件的事項。」。已封存卡片（closed=true）一律排除，包含已完成與值班事項；來源快照仍可保留封存資料供截止檢查，但不得納入週報。
+同一卡片多位指定人員並列一次，未指派指定三位組員者排除。以明確工單號去重，無工單號才以卡片 ID 去重。非「Worktrack」標籤均為系統名稱；未封存的 Worktrack 卡片即使沒有指派人員，也只列第四節並以「尚未安排」顯示；Worktrack 不受其他分類重複列入。無值班事項仍保留第四節並顯示「• 無符合條件的事項。」。已封存卡片（closed=true）一律排除，包含已完成與值班事項；來源快照仍可保留封存資料供截止檢查，但不得納入週報。
 
 ## 來源與輸出
 
@@ -77,7 +79,7 @@ dotnet run --project tests/WeeklyReports.Tests --no-restore
 
 報告僅保留進行中、已完成、未完成、值班處理線上問題四節；不另列本週重點。「未完成」僅對應 To Do；空區塊均顯示「• 無符合條件的事項。」。
 
-To Do 無任何指派人員（idMembers 為空）的未封存卡片，例外納入未完成，姓名欄寫「尚未安排」。已指派人員但不含指定三人者仍排除，其他清單的無人員卡片仍排除。「未完成」區塊事項採「1. 姓名｜系統｜事項」，省略狀態欄；進行中與值班區塊保留狀態。Worktrack 標籤仍優先獨立列於第四節避免重複。此例外優先於前述一般人員範圍及單行格式規則。
+To Do 或 Worktrack 卡片無任何指派人員（idMembers 為空）的未封存卡片，例外納入對應區塊，姓名欄寫「尚未安排」。已指派人員但不含指定三位組員者仍排除，其他清單的無人員卡片仍排除。「未完成」區塊事項採「1. 姓名｜系統｜事項」，省略狀態欄；進行中與值班區塊保留狀態。Worktrack 標籤仍優先獨立列於第四節避免重複。此例外優先於前述一般人員範圍及單行格式規則。
 
 ## 最新人員分組格式（優先於舊單行格式）
 日期期間下方列「進行中 N｜已完成 N｜未完成 N｜值班處理線上問題 N」。依四區塊實際卡片 ID 計數；值班不計入其他分類，多人卡片只計一次，不以人次計數。

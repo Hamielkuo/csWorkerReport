@@ -75,22 +75,23 @@ public static class TrelloReport
             if (card.Closed) continue; // Archived cards never belong to the report.
             var list = config.Lists.SingleOrDefault(l => l.Id == card.IdList);
             if (list is null) continue;
+            var labels = card.Labels.Select(l => l.Name.Trim()).Where(n => n.Length > 0).Distinct().ToArray();
+            var duty = labels.Contains(config.DutyLabel);
+            var systems = labels.Where(n => n != config.DutyLabel).ToArray();
             var people = config.Members.Where(m => card.IdMembers.Contains(m.Id)).Select(m => m.Name).ToArray();
-            if (people.Length == 0 && list.Category == "todo" && card.IdMembers.Length == 0) people = ["尚未安排"];
+            if (people.Length == 0 && (list.Category == "todo" || duty) && card.IdMembers.Length == 0) people = ["尚未安排"];
             if (people.Length == 0) continue;
             JsonElement? completion = null;
-            if (list.Category == "completed")
+            if (list.Category == "completed" && !duty)
             {
                 completion = source.Actions.Where(a => EnteredList(a, card.Id, list.Id))
                     .Where(a => a.GetProperty("date").GetDateTimeOffset() > start && a.GetProperty("date").GetDateTimeOffset() <= asOf)
                     .OrderByDescending(a => a.GetProperty("date").GetDateTimeOffset()).Select(a => (JsonElement?)a).FirstOrDefault();
                 if (completion is null) continue;
             }
-            var labels = card.Labels.Select(l => l.Name.Trim()).Where(n => n.Length > 0).Distinct().ToArray();
-            var systems = labels.Where(n => n != config.DutyLabel).ToArray();
             var stage = list.Category switch { "todo" => "未完成", "testing" => "QA 測試中", "releasing" => "待發布／發布中", "completed" => "已發布生產／問題已解決", _ => "處理中" };
             rows.Add(new(card.Id, card.Name, card.ShortUrl, people, systems.Length == 0 ? ["未標示系統"] : systems,
-                list.Category, stage, list.Id, labels.Contains(config.DutyLabel), card.Closed, card.Due,
+                list.Category, stage, list.Id, duty, card.Closed, card.Due,
                 completion?.GetProperty("date").GetDateTimeOffset(), completion?.GetProperty("id").GetString()));
         }
         return new ClassifiedReport("Trello", friday.ToString("yyyy-MM-dd"), start, refresh ? asOf : cutoff, asOf, preview, config,
@@ -164,7 +165,6 @@ public static class TrelloReport
                         var prefix = systems.Length == 0 ? "" : string.Join("／", systems) + "｜";
                         b.AppendLine($"{++index}. {prefix}{titleText}");
                         sectionIndex++;
-                        if (row.CompletedAt is {} at) b.AppendLine($"  完成移入時間：{at.ToOffset(TimeSpan.FromHours(8)):MM/dd HH:mm}");
                         if (row.Due is {} due) b.AppendLine($"  Trello 到期日：{due.ToOffset(TimeSpan.FromHours(8)):yyyy/MM/dd HH:mm}");
                     }
                     b.AppendLine();

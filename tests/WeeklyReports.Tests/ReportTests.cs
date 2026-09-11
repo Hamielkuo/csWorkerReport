@@ -12,7 +12,7 @@ public static class ReportTests
         BoardCard Card(string id,string list,string[]? people=null,CardLabel[]? labels=null)=>new(id,"board",list,id,"https://trello.com/c/test",people??["a"],labels??[],false,start.AddDays(1),null);
         JsonElement Move(string id,string card,DateTimeOffset time)=>J(new { id,type="updateCard",date=time,data=new { card=new {id=card},listBefore=new {id="wip"},listAfter=new {id="done"} } });
         var source=new ReportSource(end.AddSeconds(1),end.AddSeconds(2),J(new{id="board"}),J(map.Lists.Select(l=>new{id=l.Id,name=l.Name,closed=false})),J(map.Members.Select(m=>new{id=m.Id})),
-            [Card("old","done"),Card("new","done"),Card("boundary","done"),Card("end","done"),Card("reopened","qa"),Card("backlog","todo"),Card("plan","plan"),Card("outsider","wip",["z"]),Card("shared","release",["a","b"]),Card("duty","wip",labels:[new("x","Worktrack"),new("y","REPP")])],
+            [Card("old","done"),Card("new","done"),Card("boundary","done"),Card("end","done"),Card("reopened","qa"),Card("backlog","todo"),Card("plan","plan"),Card("outsider","wip",["z"]),Card("shared","release",["a","b"]),Card("duty","wip",["c"],[new("x","Worktrack"),new("y","REPP")]),Card("unassignedDuty","done",[],[new("x","Worktrack"),new("y","NPP")])],
             [Move("1","old",start.AddSeconds(-1)),Move("2","new",start.AddDays(1)),Move("3","boundary",start),Move("4","end",end),Move("5","reopened",start.AddDays(1))]);
         var archivedSource=source with {Cards=source.Cards.Select(c=>c with {Closed=true}).ToList()};
         check(TrelloReport.Classify(archivedSource,map,friday,false).Rows.Count==0,"已封存卡片排除所有分類，含完成與值班");
@@ -20,7 +20,7 @@ public static class ReportTests
         check(expanded.Rows.Single(r=>r.CardId=="unassigned").People.SequenceEqual(new[]{"尚未安排"}) && !expanded.Rows.Any(r=>r.CardId is "otherTodo" or "unassignedWip"),"僅無人員 To Do 例外納入，顯示尚未安排");
         check(TrelloReport.Render(expanded).Contains("👤 尚未安排｜1 項\n\n1. 未標示系統｜unassigned") && !TrelloReport.Render(expanded).Contains("｜未完成｜"),"未完成區塊省略重複狀態欄");
         var report=TrelloReport.Classify(source,map,friday,false);
-        check(report.Rows.Where(r=>r.Category=="completed").Select(r=>r.CardId).Order().SequenceEqual(new[]{"end","new"}),"本期完成採左開右閉區間，排除舊完成");
+        check(report.Rows.Where(r=>r.Category=="completed"&&!r.Duty).Select(r=>r.CardId).Order().SequenceEqual(new[]{"end","new"}),"本期完成採左開右閉區間，排除舊完成");
         check(report.Rows.Single(r=>r.CardId=="reopened").Category=="testing","完成後退回測試不列已完成");
         check(report.Rows.Any(r=>r.CardId=="backlog")&&!report.Rows.Any(r=>r.CardId is "plan" or "outsider"),"To Do 全列、Plan 與未指派人員排除");
         check(report.Rows.Count(r=>r.CardId=="shared")==1 && report.Rows.Single(r=>r.CardId=="shared").People.Length==2,"多人卡片合併並列姓名");
@@ -28,14 +28,20 @@ public static class ReportTests
         check(!renamed.Rows.Single().Duty,"舊值班標籤不再作線上問題判定");
         var duty=report.Rows.Single(r=>r.CardId=="duty");
         check(duty.Duty && duty.Systems.SequenceEqual(new[]{"REPP"}),"Worktrack 歸線上問題且不當系統名稱");
+        var unassignedDuty=report.Rows.Single(r=>r.CardId=="unassignedDuty");
+        check(unassignedDuty.Duty && unassignedDuty.People.SequenceEqual(new[]{"尚未安排"}),"無人員 Worktrack 卡片列入線上問題並標示尚未安排");
         var dup = TrelloReport.Deduplicate([report.Rows.First() with { CardId="copy1",Title="BUG #33032 工作",Category="releasing",SourceCardIds=[] }, report.Rows.First() with {CardId="copy2",Title="NPP 33032 工作",Category="todo",SourceCardIds=[]}]);
         check(dup.Count==1 && dup[0].Category=="releasing" && dup[0].SourceCardIds.Length==2,"同工單跨卡片去重，保留發布階段與來源證據");
         check(TrelloReport.Deduplicate([dup[0],dup[0] with {CardId="other",Title="BUG #330320 其他"}]).Count==2,"不同工單號不誤合併");
         var dutyDuplicate=TrelloReport.Deduplicate([dup[0],dup[0] with {CardId="dutyCopy",Duty=true}]);
         check(dutyDuplicate.Count==1 && dutyDuplicate[0].Duty,"同工單含值班卡片僅列線上問題");
         var text=TrelloReport.Render(report);
-        check(text.Contains("進行中 2｜已完成 2｜未完成 1｜線上問題 1"),"四區塊統計互斥，聯名卡與值班各計一次");
-        check(text.IndexOf("👤 尚未安排｜",StringComparison.Ordinal)<0 && TrelloReport.Render(expanded).IndexOf("👤 尚未安排｜",StringComparison.Ordinal)>0,"尚未安排人員群組只在有卡片時顯示");
+        check(text.Contains("進行中 2｜已完成 2｜未完成 1｜線上問題 2"),"四區塊統計互斥，聯名卡與值班各計一次");
+        check(!text.Contains("完成移入時間"),"已完成事項不顯示完成移入時間");
+        var dutySection = text.IndexOf("四、值班處理線上問題", StringComparison.Ordinal);
+        check(dutySection >= 0 && text.IndexOf("👤 尚未安排｜", dutySection, StringComparison.Ordinal) >= 0
+            && TrelloReport.Render(expanded).IndexOf("三、未完成", StringComparison.Ordinal) >= 0,
+            "尚未安排人員依 Worktrack 與 To Do 卡片分組顯示");
         check(!text.Contains("本週重點") && !text.Contains("待處理") && text.Contains("三、未完成") && report.Rows.Where(r=>r.Category=="todo").All(r=>r.Stage=="未完成"),"固定四區塊，未完成只對應 To Do");
         check(text.Contains("【C# 組員週報｜") && !text.Contains("來源：") && !text.Contains("https://trello.com") && text.Contains("👤 乙、甲｜1 項\n\n【待發布／發布中】\n\n1. 未標示系統｜shared") && !text.Contains("  狀態："),"週報標題與單行格式，不顯示來源及連結");
         check(text.Split("｜duty").Length==2 && text.Contains("四、值班"),"值班事項僅出現一次");
