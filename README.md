@@ -1,6 +1,6 @@
 # C# 組員週報
 
-.NET 10 從 Trello TCT-CJ 唯讀取得卡片及移動歷史，固定人員與清單 ID 分類。Codex 每週五 16:50（Asia/Taipei）整理、存檔、在目前對話提供 Telegram 文字，由管理者 17:00 人工傳給主管。
+.NET 10 從 Trello TCT-CJ 唯讀取得卡片及移動歷史，固定人員與清單 ID 分類。正式週報由 C# 直接寫入 Notion 的「週報」資料庫；每週一列是一個 page，主 table 保存 Trello 四大分類統計，page 內容保存完整週報與人員統計表。本地只保存來源快照與分類依據。
 
 Telegram Bot 收件已停用，原有 SQLite 與原文保留，不再納入新週報。`run` 指令已禁止啟動收件。舊操作記錄在 docs/telegram-legacy.md，僅作歷史參考。
 
@@ -8,6 +8,7 @@ Telegram Bot 收件已停用，原有 SQLite 與原文保留，不再納入新�
 
 - `config/trello.local.json`：API Key、唯讀 Token、固定看板 ID／名稱／shortLink。
 - `config/trello-report.local.json`：三位人員 Member ID 與輸出姓名、五個清單 ID／精確名稱／分類，以及Worktrack 標籤。
+- `config/notion.local.json`：Notion installation token、API 版本與「週報」data source ID（本機秘密，已排除 Git）。
 - 設定範本在 config/*.example.json；本機秘密與人員資料均排除 Git。
 
 ```sh
@@ -17,6 +18,10 @@ dotnet build src/WeeklyReports -c Release --no-restore
 ./scripts/snapshot.sh --date 2026-09-11
 # 提前試跑，與正式檔案分開保存
 ./scripts/snapshot.sh --date 2026-09-11 --preview
+# 明確手動提前同步：會建立「提前測試」Notion page，不冒充正式週報
+./scripts/snapshot.sh --date 2026-09-11 --force-early
+# Notion 唯讀連線與欄位驗證
+dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll notion-check --root "$PWD"
 # 原始唯讀連線驗證
 dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-check
 ```
@@ -41,19 +46,16 @@ dotnet src/WeeklyReports/bin/Release/net10.0/WeeklyReports.dll trello-check
 卡片與動作採 ID cursor 分頁（每頁 1000），取得指定看板全量資料再套用人員、清單範圍。只呼叫該看板 GET API；憑證放 Authorization Header，禁止 redirect。
 
 ```text
-data/reports/YYYY-MM-DD/summary/
-  report.md / telegram.txt                  # 正式稿
-  latest-run.txt                            # 正式來源目錄
-  preview-report.md / preview-telegram.txt   # 提前試跑稿
-  preview-latest-run.txt
-  runs/<時間>-trello/
-    source.json                             # 來源、動作與擷取時間
-    classified.json                         # 分類與完成移入證據
-    report.md / telegram.txt
-    telegram-01.txt ...                      # 每則 <= 3500 UTF-16 code units
+data/reports/YYYY-MM-DD/runs/<時間>-trello/
+  source.json                               # 來源、動作與擷取時間
+  classified.json                           # 分類與完成移入證據
 ```
 
-程式提供可直接使用的基礎稿；Codex 依 docs/weekly-summary.md 整理重點並保留基礎稿及全部卡片，無須 OpenAI API Key。正式與試跑各自保存，歷史版本不覆蓋。沒有符合卡片時仍產出零事項報告，不再列「未交名單」。
+程式產生的正式稿會在 Notion「週報」資料庫建立或更新一個週報 page；主 table 保存每週摘要，page 內另放每位人員統計 table 與完整週報。`--preview` 只產生預覽與本地來源快照，不會寫入 Notion。沒有符合卡片時仍產出零事項報告，不再列「未交名單」。
+
+統計規則完全依 Trello 最終去重後的週報：進行中包含 Work in process／測試／發布，已完成對應處理完畢，未完成對應 To Do，Worktrack 標籤列為線上問題；四類互斥，總項目為四類加總。人員統計以目前週報的實際指派人員計算，工作重點由階段與系統標籤產生，不使用圖片範例的 DEV／UAT／CBMT／生產欄位。
+
+正式命令在週五 16:50 前會停止。只有人工明確指定 `--force-early` 才會提前同步；此模式使用擷取開始時間作為資料界線，Notion page 標題加上「提前測試」，整理狀態為「提前測試」，不會與正式週報 page 混用。
 
 ## 截止準確性與運作條件
 
@@ -67,7 +69,7 @@ Trello REST 不提供完整歷史快照（例如標籤變更不一定能從動�
 dotnet run --project tests/WeeklyReports.Tests --no-restore
 ```
 
-測試包括週界、完成退回、多人去重、範圍排除、值班、分頁、錯誤保護與輸出。備份 data/ 和本機設定需另外處理，Git 不包含它們。舊 Telegram SQLite 仍保留但不再寫入。
+測試包括週界、完成退回、多人去重、範圍排除、值班、分頁、錯誤保護、統計與本地來源保存。備份 data/ 和本機設定需另外處理，Git 不包含它們；正式整理後的週報以 Notion 為保存位置。舊 Telegram SQLite 仍保留但不再寫入。
 
 依據：[Trello API](https://developer.atlassian.com/cloud/trello/guides/rest-api/nested-resources/)、[Codex 排程](https://developers.openai.com/codex/app/automations)。
 

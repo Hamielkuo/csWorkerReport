@@ -51,4 +51,5 @@ finally { Directory.Delete(root,true); }
 await TrelloTests.Run(Check);
 ReportTests.Run(Check);
 await PaginationTests.Run(Check);
+await NotionTests.Run(Check);
 Console.WriteLine($"{passed} checks passed.");

@@ -7,11 +7,22 @@ var command = args.FirstOrDefault() ?? "run";
 try
 {
     if (command == "run") throw new ArgumentException("Telegram Bot 收件已停用；週報改用 trello-report。歷史資料仍保留。");
+    if (command == "notion-check")
+    {
+        var notionSettings = NotionSettings.Load(root);
+        using var notionHandler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var notionHttp = new HttpClient(notionHandler) { Timeout = TimeSpan.FromSeconds(30) };
+        var check = await new NotionClient(notionHttp, notionSettings).CheckAsync(CancellationToken.None);
+        Console.WriteLine(JsonSerializer.Serialize(check, Rules.Json));
+        return;
+    }
     if (command == "trello-report")
     {
         var dateIndex = Array.IndexOf(args, "--date");
         var friday = dateIndex >= 0 ? Rules.ParseFriday(args[dateIndex + 1]) : Rules.Friday(DateTimeOffset.UtcNow);
         var preview = args.Contains("--preview");
+        var forceEarly = args.Contains("--force-early");
+        var refresh = args.Contains("--refresh");
         var mapping = JsonSerializer.Deserialize<ReportSettings>(File.ReadAllText(Path.Combine(root,"config/trello-report.local.json")),Rules.Json)!;
         mapping.Validate();
         var reuseIndex = Array.IndexOf(args,"--source");
@@ -26,9 +37,31 @@ try
             using var client=new HttpClient(handler) { Timeout=TimeSpan.FromSeconds(60) };
             source=await new TrelloReader(client,config).ReportSnapshot(friday,CancellationToken.None);
         }
-        var report=TrelloReport.Classify(source,mapping,friday,preview);
-        var run=TrelloReport.Save(root,source,report);
-        Console.WriteLine(JsonSerializer.Serialize(new { report.Friday,report.Preview,Count=report.Rows.Count,RunDirectory=run,Categories=report.Rows.GroupBy(r=>r.Category).ToDictionary(g=>g.Key,g=>g.Count()),DutyCount=report.Rows.Count(r=>r.Duty)},Rules.Json));
+        var report=TrelloReport.Classify(source,mapping,friday,preview,forceEarly,refresh);
+        var sourceRun=TrelloReport.SaveSource(root,source,report);
+        var rendered = TrelloReport.Render(report);
+        if (preview)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                report.Friday, report.Preview, report.ForcedEarly, Count = report.Rows.Count, SourceRun = sourceRun,
+                report.ManualRefresh,
+                Categories = report.Rows.GroupBy(r => r.Category).ToDictionary(g => g.Key, g => g.Count()),
+                DutyCount = report.Rows.Count(r => r.Duty), Report = rendered
+            }, Rules.Json));
+            return;
+        }
+        var notionSettings = NotionSettings.Load(root);
+        using var notionHandler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var notionHttp = new HttpClient(notionHandler) { Timeout = TimeSpan.FromSeconds(60) };
+        var notion = await new NotionClient(notionHttp, notionSettings).SyncAsync(report, rendered, CancellationToken.None);
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            report.Friday, report.Preview, report.ForcedEarly, report.ManualRefresh, Count = report.Rows.Count, SourceRun = sourceRun,
+            Categories = report.Rows.GroupBy(r => r.Category).ToDictionary(g => g.Key, g => g.Count()),
+            DutyCount = report.Rows.Count(r => r.Duty), NotionRecordPageId = notion.RecordPageId,
+            NotionMemberStatisticsRows = notion.StatisticsRows
+        }, Rules.Json));
         return;
     }
     if (command is "trello-check" or "trello-sync")
@@ -82,7 +115,7 @@ try
         Console.WriteLine(JsonSerializer.Serialize(store.Snapshot(friday, args.Contains("--include-late"), DateTimeOffset.UtcNow), Rules.Json));
         return;
     }
-    throw new ArgumentException("可用指令：trello-report、trello-check、trello-sync；歷史查詢：snapshot、bind。");
+    throw new ArgumentException("可用指令：trello-report、notion-check、trello-check、trello-sync；歷史查詢：snapshot、bind。");
 }
 catch (OperationCanceledException) { }
 catch (ArgumentException ex) { Console.Error.WriteLine(ex.Message); Environment.ExitCode = 1; }

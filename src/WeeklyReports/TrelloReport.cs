@@ -35,11 +35,15 @@ public record ReportRow(string CardId, string Title, string Url, string[] People
 }
 public record ClassifiedReport(string Source, string Friday, DateTimeOffset PeriodStartExclusive,
     DateTimeOffset PeriodEndInclusive, DateTimeOffset AsOf, bool Preview, ReportSettings Mapping,
-    List<ReportRow> Rows);
+    List<ReportRow> Rows)
+{
+    public bool ForcedEarly { get; init; }
+    public bool ManualRefresh { get; init; }
+}
 
 public static class TrelloReport
 {
-    public static ClassifiedReport Classify(ReportSource source, ReportSettings config, DateOnly friday, bool preview)
+    public static ClassifiedReport Classify(ReportSource source, ReportSettings config, DateOnly friday, bool preview, bool allowEarly = false, bool refresh = false)
     {
         config.Validate();
         if (source.Board.GetProperty("id").GetString() != config.BoardId) throw new ArgumentException("週報看板 ID 不符。");
@@ -54,12 +58,15 @@ public static class TrelloReport
                 throw new ArgumentException($"週報人員「{person.Name}」不在此看板，請確認成員設定。");
         var cutoff = Rules.Cutoff(friday);
         var start = cutoff.AddDays(-7);
-        if (!preview && source.FetchStartedAt < cutoff) throw new ArgumentException("尚未到週五 16:50；提前試跑請加 --preview。");
-        var asOf = preview && source.FetchStartedAt < cutoff ? source.FetchStartedAt : cutoff;
+        var forcedEarly = allowEarly && source.FetchStartedAt < cutoff;
+        if (!refresh && !preview && source.FetchStartedAt < cutoff && !allowEarly) throw new ArgumentException("尚未到週五 16:50；提前試跑請加 --preview，若要手動同步請加 --force-early。");
+        var asOf = refresh
+            ? source.FetchFinishedAt
+            : (preview || forcedEarly) && source.FetchStartedAt < cutoff ? source.FetchStartedAt : cutoff;
         if (asOf <= start) throw new ArgumentException("試跑日期尚未進入本期。");
         // Trello is not a historical snapshot API. Refuse uncertain historical reconstruction.
         // Any board card changed after the target can have left scope (member/list/label change).
-        if (source.Cards.Any(c => c.DateLastActivity > asOf) || source.Actions.Any(a => a.GetProperty("date").GetDateTimeOffset() > asOf))
+        if (!refresh && (source.Cards.Any(c => c.DateLastActivity > asOf) || source.Actions.Any(a => a.GetProperty("date").GetDateTimeOffset() > asOf)))
             throw new ArgumentException("看板在截止／擷取開始後有變更，無法保證當時清單、人員及標籤狀態。未產生正式週報；請使用已保存的截止快照，或人工確認後另做目前狀態報告。");
         var rows = new List<ReportRow>();
         foreach (var card in source.Cards.DistinctBy(c => c.Id))
@@ -86,8 +93,12 @@ public static class TrelloReport
                 list.Category, stage, list.Id, labels.Contains(config.DutyLabel), card.Closed, card.Due,
                 completion?.GetProperty("date").GetDateTimeOffset(), completion?.GetProperty("id").GetString()));
         }
-        return new("Trello", friday.ToString("yyyy-MM-dd"), start, cutoff, asOf, preview, config,
-            Deduplicate(rows).OrderBy(r => r.Category).ThenBy(r => r.People[0], StringComparer.Ordinal).ThenBy(r => r.Title, StringComparer.Ordinal).ToList());
+        return new ClassifiedReport("Trello", friday.ToString("yyyy-MM-dd"), start, refresh ? asOf : cutoff, asOf, preview, config,
+            Deduplicate(rows).OrderBy(r => r.Category).ThenBy(r => r.People[0], StringComparer.Ordinal).ThenBy(r => r.Title, StringComparer.Ordinal).ToList())
+        {
+            ForcedEarly = forcedEarly,
+            ManualRefresh = refresh
+        };
     }
     public static bool EnteredList(JsonElement action, string cardId, string listId)
     {
@@ -130,6 +141,8 @@ public static class TrelloReport
         var memberCount = rows.SelectMany(r => r.People).Where(p => p != "尚未安排").Distinct().Count();
         b.AppendLine($"👨‍💻 {memberCount} 人｜進行中 {active.Count}｜已完成 {completed.Count}｜未完成 {todo.Count}｜線上問題 {duty.Count}");
         if (report.Preview) b.AppendLine("\n⚠️ 提前試跑，非正式截止報告");
+        else if (report.ForcedEarly) b.AppendLine("\n⚠️ 強制提前同步，非正式截止報告");
+        else if (report.ManualRefresh) b.AppendLine("\n⚠️ 截止後依目前 Trello 狀態重整，非原始截止快照");
         int StageOrder(string category) => category switch { "inProgress" => 0, "testing" => 1, "releasing" => 2, "completed" => 3, _ => 4 };
         void Section(string title, List<ReportRow> items, bool groupStage = false)
         {
@@ -179,21 +192,12 @@ public static class TrelloReport
         if(text.Length>0) chunks.Add(text);
         return chunks.Count==1 ? chunks : chunks.Select((s,i)=>$"第 {i+1}/{chunks.Count} 則\n{s}").ToList();
     }
-    public static string Save(string root, ReportSource source, ClassifiedReport report)
+    public static string SaveSource(string root, ReportSource source, ClassifiedReport report)
     {
-        var summary = Path.Combine(root,"data/reports",report.Friday,"summary");
-        var run = Path.Combine(summary,"runs",DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(8)).ToString("yyyyMMdd-HHmmss-fffffff")+"-trello");
-        var text = Render(report);
+        var run = Path.Combine(root,"data/reports",report.Friday,"runs",
+            DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(8)).ToString("yyyyMMdd-HHmmss-fffffff")+"-trello");
         Rules.AtomicWrite(Path.Combine(run,"source.json"),JsonSerializer.Serialize(source,Rules.Json));
         Rules.AtomicWrite(Path.Combine(run,"classified.json"),JsonSerializer.Serialize(report,Rules.Json));
-        Rules.AtomicWrite(Path.Combine(run,"telegram.txt"),text);
-        Rules.AtomicWrite(Path.Combine(run,"report.md"),$"# C# 組員週報\n\n產生時間：{source.FetchFinishedAt:O}\n\n正式截止：{report.PeriodEndInclusive:O}\n\n試跑：{report.Preview}\n\n"+text);
-        var chunks=Split(text);
-        for(var i=0;i<chunks.Count;i++) Rules.AtomicWrite(Path.Combine(run,$"telegram-{i+1:00}.txt"),chunks[i]);
-        // A preview never overwrites the formal report pointer/files.
-        var prefix = report.Preview ? "preview-" : "";
-        foreach(var file in new[]{"report.md","telegram.txt"}) Rules.AtomicWrite(Path.Combine(summary,prefix+file),File.ReadAllText(Path.Combine(run,file)));
-        Rules.AtomicWrite(Path.Combine(summary,prefix+"latest-run.txt"),run);
         return run;
     }
 }

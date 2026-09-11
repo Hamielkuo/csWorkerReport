@@ -43,18 +43,51 @@ public static class ReportTests
         void Reject(ReportSource s,string label){try{TrelloReport.Classify(s,map,friday,false);throw new Exception(label);}catch(ArgumentException){check(true,label);}}
         Reject(source with { Cards=[..source.Cards,Card("late","wip") with {DateLastActivity=end.AddSeconds(1)}]},"截止後變更拒絕冒充截止快照");
         Reject(source with {FetchStartedAt=end.AddMinutes(-1)},"提前執行須明示 preview");
+        var forcedSource = source with
+        {
+            FetchStartedAt = end.AddMinutes(-1),
+            Actions = source.Actions.Where(a => a.GetProperty("date").GetDateTimeOffset() <= end.AddMinutes(-1)).ToList()
+        };
+        var forcedEarly = TrelloReport.Classify(forcedSource, map, friday, false, true);
+        check(forcedEarly.ForcedEarly && forcedEarly.AsOf == forcedSource.FetchStartedAt, "force-early 僅允許明確手動提前同步");
+        var refreshedSource = source with
+        {
+            FetchStartedAt = end.AddMinutes(5),
+            FetchFinishedAt = end.AddMinutes(6),
+            Cards = [..source.Cards, Card("late", "wip") with { DateLastActivity = end.AddMinutes(1) }]
+        };
+        var refreshed = TrelloReport.Classify(refreshedSource, map, friday, false, false, true);
+        check(refreshed.ManualRefresh && refreshed.AsOf == refreshedSource.FetchFinishedAt && refreshed.Rows.Any(r => r.CardId == "late"), "截止後手動重整採用目前看板狀態並標記");
         Reject(source with {Lists=J(map.Lists.Select(l=>new{id=l.Id,name="不符",closed=false}))},"精確清單名稱不符停止");
         var chunks=TrelloReport.Split(string.Concat(Enumerable.Repeat("長文字😀",2000)));
         check(chunks.Count>1 && chunks.All(c=>c.Length<=3500)&&chunks.All(c=>!char.IsHighSurrogate(c[^1])),"Telegram 超長內容分段且不切斷 surrogate");
         var root=Path.Combine(Path.GetTempPath(),"trello-report-test-"+Guid.NewGuid());
         try
         {
-            var run=TrelloReport.Save(root,source,report);
+            var run=TrelloReport.SaveSource(root,source,report);
             check(File.Exists(Path.Combine(run,"source.json"))&&File.Exists(Path.Combine(run,"classified.json")),"保存來源與分类依據");
-            var official=File.ReadAllText(Path.Combine(root,"data/reports/2026-09-11/summary/latest-run.txt"));
-            TrelloReport.Save(root,source,report with {Preview=true});
-            check(File.ReadAllText(Path.Combine(root,"data/reports/2026-09-11/summary/latest-run.txt"))==official,"試跑不覆蓋正式輸出");
+            check(!File.Exists(Path.Combine(run,"report.md"))&&!File.Exists(Path.Combine(run,"telegram.txt")),"整理後報告不落地保存");
+            var previewRun=TrelloReport.SaveSource(root,source,report with {Preview=true});
+            check(previewRun!=run&&File.Exists(Path.Combine(previewRun,"classified.json")),"試跑只保存來源快照");
         }
         finally{Directory.Delete(root,true);}
+
+        var statisticReport = report with
+        {
+            Rows =
+            [
+                new ReportRow("active", "BUG #1234", "", ["甲"], ["NPP"], "testing", "QA 測試中", "qa", false, false, null, null, null),
+                new ReportRow("release", "需求 #1235", "", ["甲"], ["CB"], "releasing", "待發布／發布中", "release", false, false, null, null, null),
+                new ReportRow("todo", "需求 #1236", "", ["甲"], ["REPP"], "todo", "未完成", "todo", false, false, null, null, null),
+                new ReportRow("duty", "Worktrack", "", ["甲"], ["NPP"], "inProgress", "處理中", "wip", true, false, null, null, null)
+            ]
+        };
+        var summary = WeeklyStatistics.BuildSummary(statisticReport);
+        var statistics = WeeklyStatistics.Build(statisticReport);
+        var jia = statistics.Single(s => s.Person == "甲");
+        check(summary.MemberCount == 1 && summary.InProgress == 2 && summary.Completed == 0 && summary.Todo == 1 && summary.Duty == 1 && summary.Total == 4,
+            "週報總統計依 Trello 四大分類計算");
+        check(jia.InProgress == 2 && jia.Completed == 0 && jia.Todo == 1 && jia.Duty == 1 && jia.Total == 4 && jia.WorkFocus.Contains("NPP"),
+            "週報人員統計依 Trello 分類與系統標籤計算");
     }
 }
